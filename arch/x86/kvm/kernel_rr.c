@@ -14,6 +14,7 @@
 #include "kernel_rr.h"
 
 static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque);
+static int rr_set_vcpu_intr_cnt(int vcpu_id, unsigned long inst_cnt);
 
 int in_record = 0;
 int in_replay = 0;
@@ -56,6 +57,9 @@ static unsigned long ivshmem_base_addr = 0;
 static unsigned long user_result_buffer;
 
 static volatile unsigned long buffer_inject_flag = 0;
+
+static unsigned long lock_owner_offset = sizeof(rr_event_guest_queue_header);
+static unsigned long vcpu_inst_cnt_offset = sizeof(rr_event_guest_queue_header) + sizeof(unsigned long);
 
 
 void set_buffer_inject_flag(int bit)
@@ -459,21 +463,23 @@ static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque)
 
     WARN_ON(is_guest_mode(vcpu));
 
-    event_log = kmalloc(sizeof(rr_event_log), GFP_KERNEL);
+    // event_log = kmalloc(sizeof(rr_event_log), GFP_KERNEL);
 
-    event_log->id = vcpu->vcpu_id;
-    event_log->event.interrupt.vector = *int_vector;
-    event_log->event.interrupt.from = 3;
-    event_log->type = EVENT_TYPE_INTERRUPT;
-    event_log->next = NULL;
+    // event_log->id = vcpu->vcpu_id;
+    // event_log->event.interrupt.vector = *int_vector;
+    // event_log->event.interrupt.from = 3;
+    // event_log->type = EVENT_TYPE_INTERRUPT;
+    // event_log->next = NULL;
 
-    event_log->rip = kvm_arch_vcpu_get_ip(vcpu);
+    // event_log->rip = kvm_arch_vcpu_get_ip(vcpu);
 
-    event_log->inst_cnt = kvm_get_inst_cnt(vcpu);
+    // event_log->inst_cnt = kvm_get_inst_cnt(vcpu);
 
-    rr_get_regs(vcpu, &event_log->event.interrupt.regs);
+    // rr_get_regs(vcpu, &event_log->event.interrupt.regs);
 
-    rr_insert_event_log(event_log);
+    // rr_insert_event_log(event_log);
+
+    BUG_ON(rr_set_vcpu_intr_cnt(vcpu->vcpu_id, kvm_get_inst_cnt(vcpu)) < 0);
 }
 
 // Deprecated: old way of recording cfu
@@ -1014,11 +1020,27 @@ lapic_log* create_lapic_log(int delivery_mode, int vector, int trig_mode)
 static int get_lock_owner(void) {
     int cpu_id;
 
-    if (get_user(cpu_id, (int __user *)(ivshmem_base_addr + sizeof(rr_event_guest_queue_header)))) {
+    if (get_user(cpu_id, (int __user *)(ivshmem_base_addr + lock_owner_offset))) {
         printk(KERN_WARNING "Failed to read owner id\n");
     }
 
     return cpu_id;
+}
+
+static int
+rr_set_vcpu_intr_cnt(int vcpu_id, unsigned long inst_cnt)
+{
+    int cpu_id;
+
+    if (copy_to_user(&inst_cnt,
+                     (int __user *)(ivshmem_base_addr + vcpu_inst_cnt_offset + vcpu_id * sizeof(unsigned long)),
+                     sizeof(unsigned long)))
+    {
+        printk(KERN_WARNING "Failed to set vcpu intr inst cnt\n");
+        return -1;
+    }
+
+    return 0;
 }
 
 void rr_sync_inst_cnt(struct kvm_vcpu *vcpu, unsigned long spin_cnt)
