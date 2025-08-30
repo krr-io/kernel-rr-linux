@@ -32,26 +32,6 @@ rr_mem_access_log *rr_mem_log_cur = NULL;
 
 rr_random *random_cur = NULL;
 
-// == with hypercall
-const unsigned long syscall_addr = 0xffffffff81800000; // info addr entry_SYSCALL_64
-const unsigned long pf_excep_addr = 0xffffffff81741960; // info addr exc_page_fault
-const unsigned long copy_from_iter_addr = 0xffffffff8144af0d; // lib/iov_iter.c:186
-const unsigned long copy_from_user_addr = 0xffffffff814528e7; // lib/usercopy.c:21
-const unsigned long copy_page_from_iter_addr = 0xffffffff8144dd7e;
-const unsigned long strncpy_addr = 0xffffffff81483732; // lib/strncpy_from_user.c:141
-const unsigned long get_user_addr = 0xffffffff816c2220; // arch/x86/lib/getuser.S:103
-const unsigned long strnlen_user_addr = 0xffffffff8146bb66; // lib/strnlen_user.c:115
-
-const unsigned long random_bytes_addr_start = 0xffffffff81533660; // b _get_random_bytes
-const unsigned long random_bytes_addr_end = 0xffffffff81533800; // b drivers/char/random.c:382
-
-const unsigned long last_removed_addr = 0;
-
-const unsigned long uaccess_begin = 0xffffffff811e084c;
-const unsigned long default_idle_addr = 0xffffffff81741feb; // arch/x86/kernel/process.c:731
-const unsigned long wait_lock_addr = 0xffffffff810ee480; //
-
-
 static unsigned long ivshmem_base_addr = 0;
 
 static unsigned long user_result_buffer;
@@ -482,206 +462,6 @@ static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque)
     BUG_ON(rr_set_vcpu_intr_cnt(vcpu->vcpu_id, kvm_get_inst_cnt(vcpu)) < 0);
 }
 
-// Deprecated: old way of recording cfu
-static void handle_event_cfu(struct kvm_vcpu *vcpu, void *opaque)
-{
-
-    struct kvm_regs *regs;
-    struct kvm_sregs *sregs;
-    rr_event_log *event_log;
-    void *val;
-    int ret;
-    struct x86_emulate_ctxt *emulate_ctxt;
-    rr_cfu *cfu_log;
-    int i;
-    unsigned long long dest_addr, src_addr;
-    unsigned long *cfu_ip = (unsigned long *)opaque;
-    unsigned long len;
-    bool do_read_mem = false;
-    int j;
-    __maybe_unused u8 dest_data[4096];
-
-    cfu_log = kmalloc(sizeof(rr_cfu), GFP_KERNEL);
-
-    regs = kmalloc(sizeof(struct kvm_regs), GFP_KERNEL);
-    sregs = kmalloc(sizeof(struct kvm_sregs), GFP_KERNEL);
-    event_log = kmalloc(sizeof(rr_event_log), GFP_KERNEL);
-
-    event_log->type = EVENT_TYPE_CFU;
-
-    rr_get_regs(vcpu, regs);
-    rr_get_sregs(vcpu, sregs);
-
-    emulate_ctxt = vcpu->arch.emulate_ctxt;
-
-    if (*cfu_ip == copy_from_iter_addr) {
-        // === Kernel Version 1 ===
-        // len = regs->r14;
-        // dest_addr = regs->rdi - len;
-        // src_addr = regs->rsi - len;
-        // === End ===
-
-        // === Kernel Version 2 ===
-        len = regs->rdx;
-        dest_addr = regs->rdi - len;
-        src_addr = regs->rsi - len;
-        // === End ===
-
-        do_read_mem = true;
-    } else if (*cfu_ip == copy_from_user_addr) {
-        // === Kernel Version 1 ===
-        // len = regs->rbx;
-        // src_addr = regs->rsi - len;
-        // dest_addr = regs->rdi - len;
-        // === End ===
-
-        // === Kernel Version 1 ===
-        len = regs->rbp;
-        src_addr = regs->rsi - len;
-        dest_addr = regs->rdi - len;
-        // === End ===
-
-        do_read_mem = true;
-    } else if (*cfu_ip == copy_page_from_iter_addr) {
-        len = regs->rbx;
-        src_addr = regs->rsi - len;
-        dest_addr = regs->rdi - len;
-        do_read_mem = true;
-    } else if (*cfu_ip == strncpy_addr) {
-        // === Kernel version 1 ===
-        // len = regs->rax;
-        // src_addr = regs->r8;
-        // dest_addr = regs->rdi;
-        // === End ===
-
-        // === Kernel version 2 ===
-        // len = regs->rax;
-        // src_addr = regs->rbp;
-        // dest_addr = regs->r12;
-        // === End ===
-
-        // === Kernel version 3 ===
-        len = regs->rax;
-        src_addr = regs->rdi;
-        dest_addr = regs->r8;
-        do_read_mem = true;
-    } else if (*cfu_ip == get_user_addr) {
-       cfu_log->rdx = regs->rdx;
-       cfu_log->src_addr = 0;
-       cfu_log->dest_addr = 0;
-    //    printk(KERN_INFO "get user log: %lx\n", cfu_log->rdx);
-    } else if (*cfu_ip == strnlen_user_addr) {
-        cfu_log->len = regs->rax;
-        // printk(KERN_INFO "strnlen_user_addr happened: %d\n", cfu_log->len);
-    } else if (*cfu_ip == uaccess_begin) {
-        cfu_log->src_addr = regs->rax;
-        cfu_log->len = sregs->cs.base;
-        printk(KERN_INFO "Read from src=0x%lx, dest=0x%lx, len=%lu\n", cfu_log->src_addr, cfu_log->dest_addr, cfu_log->len);
-    }
-
-    if (do_read_mem) {
-        cfu_log->src_addr = src_addr;
-        cfu_log->dest_addr = dest_addr;
-        cfu_log->len = len;
-
-        if (cfu_log->len > 4096) {
-            printk(KERN_WARNING "Oversized: 0x%lx, %lu, addr=0x%lx\n", dest_addr, cfu_log->len, regs->rip);
-        } else {
-            // printk(KERN_INFO "Read from src=0x%lx, dest=0x%lx, len=%lu\n", cfu_log->src_addr, cfu_log->dest_addr, cfu_log->len);
-
-            ret = rr_kvm_read_guest_virt(vcpu,
-                                      cfu_log->src_addr, cfu_log->data, cfu_log->len,
-                                      &emulate_ctxt->exception, PFERR_USER_MASK);
-
-            // ret = rr_kvm_read_guest_virt(vcpu,
-            //                           cfu_log->dest_addr, dest_data, cfu_log->len,
-            //                           &emulate_ctxt->exception, 0);
-
-            if (ret != X86EMUL_CONTINUE) {
-                printk(KERN_WARNING "Failed to read addr 0x%lx, ret %d\n",
-                    cfu_log->src_addr, ret);
-            }
-        }
-
-        // if (strcmp(cfu_log->data, dest_data) == 0) {
-        //     printk(KERN_WARNING "read data matched\n");
-        // }
-
-        // printk(KERN_INFO "CFU: read from addr=0x%lx, len=%d, ret=%d, rip=0x%lx\n",
-        //        cfu_log->dest_addr, len, ret, regs->rip);
-
-        // if (ret != X86EMUL_PROPAGATE_FAULT) {
-        //     printk(KERN_WARNING "Failed to read addr 0x%lx, ret %d\n",
-        //            cfu_log->dest_addr, ret);
-        // }
-    }
-
-    event_log->event.cfu = *cfu_log;
-
-    event_log->rip = kvm_arch_vcpu_get_ip(vcpu);
-
-    if (rr_post_handle_event(vcpu, event_log))
-        rr_insert_event_log(event_log);
-
-    return;
-}
-
-static void handle_event_random_generator(struct kvm_vcpu *vcpu, void *opaque)
-{
-    struct kvm_regs *regs;
-    rr_event_log *event_log;
-    rr_random *rand_log;
-    struct x86_emulate_ctxt *emulate_ctxt;
-    int ret = 0;
-    unsigned long rip = kvm_arch_vcpu_get_ip(vcpu);
-
-    if (rip == random_bytes_addr_start) {
-        if (random_cur != NULL) {
-            printk(KERN_WARNING "Intercept random in middle of a random");
-        }
-
-        regs = kzalloc(sizeof(struct kvm_regs), GFP_KERNEL_ACCOUNT);
-        rand_log = kmalloc(sizeof(rr_random), GFP_KERNEL);
-
-        rr_get_regs(vcpu, regs);
-
-        rand_log->len = regs->rsi;
-        rand_log->buf = regs->rdi;
-
-        random_cur = rand_log;
-    } else {
-        rand_log = random_cur;
-
-        if (random_cur == NULL) {
-            return;
-        }
-        
-        printk(KERN_INFO "Random read from 0x%lx, len=%d\n", rand_log->buf, rand_log->len);
-
-        event_log = kmalloc(sizeof(rr_event_log), GFP_KERNEL);
-        
-        event_log->type = EVENT_TYPE_RANDOM;
-
-        emulate_ctxt = vcpu->arch.emulate_ctxt;
-
-        ret = emulate_ctxt->ops->read_emulated(vcpu->arch.emulate_ctxt,
-                                            rand_log->buf, rand_log->data, rand_log->len,
-                                            &emulate_ctxt->exception);
-        if (ret != X86EMUL_PROPAGATE_FAULT) {
-            printk(KERN_WARNING "Failed to read addr 0x%lx, ret %d\n",
-                rand_log->buf, ret);
-        }
-
-        memcpy(&event_log->event.rand, rand_log, sizeof(rr_random));
-        event_log->rip = rip;
-
-        random_cur = NULL;
-
-        if (rr_post_handle_event(vcpu, event_log))
-            rr_insert_event_log(event_log);
-    }
-}
-
 static void handle_event_io_in(struct kvm_vcpu *vcpu, void *opaque)
 {
     rr_event_log *event_log;
@@ -1101,12 +881,6 @@ void rr_record_event(struct kvm_vcpu *vcpu, int event_type, void *opaque)
         // handle_event_io_in(vcpu, opaque);
         handle_event_io_in_shm(vcpu, opaque);
         break;
-    case EVENT_TYPE_CFU:
-        handle_event_cfu(vcpu, opaque);
-        break;
-    case EVENT_TYPE_RANDOM:
-        handle_event_random_generator(vcpu, opaque);
-        break;
     case EVENT_TYPE_RDTSC:
         // handle_event_rdtsc(vcpu, opaque);
         handle_event_rdtsc_shm(vcpu, opaque);
@@ -1145,40 +919,9 @@ void rr_trace_memory_write(struct kvm_vcpu *vcpu, gpa_t gpa)
     }
 }
 
-int rr_handle_breakpoint(struct kvm_vcpu *vcpu)
+__maybe_unused int
+rr_handle_breakpoint(struct kvm_vcpu *vcpu)
 {
-    unsigned long addr;
-
-    if (!rr_in_record()) {
-        return 0;
-    }
-
-    addr = kvm_get_linear_rip(vcpu);
-
-    // printk(KERN_INFO "breakpoint addr 0x%lx\n", addr);
-
-    switch(addr) {
-        case syscall_addr:
-            rr_record_event(vcpu, EVENT_TYPE_SYSCALL, NULL);
-            break;
-        case pf_excep_addr:
-            rr_record_event(vcpu, EVENT_TYPE_EXCEPTION, new_rr_exception(PF_VECTOR, 0, 0));
-            break;
-        case copy_from_iter_addr:
-        case copy_from_user_addr:
-        case strncpy_addr:
-        case get_user_addr:
-        case strnlen_user_addr:
-        case copy_page_from_iter_addr:
-            rr_record_event(vcpu, EVENT_TYPE_CFU, &addr);
-            break;
-        case random_bytes_addr_start:
-        case random_bytes_addr_end:
-            rr_record_event(vcpu, EVENT_TYPE_RANDOM, NULL);
-        default:
-            break;
-    }
-
     return 0;
 }
 
