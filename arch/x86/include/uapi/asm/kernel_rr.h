@@ -69,7 +69,6 @@ typedef struct {
     struct kvm_regs regs;
 } rr_interrupt;
 
-
 typedef struct {
     int id;
     unsigned long val;

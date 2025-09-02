@@ -14,7 +14,7 @@
 #include "kernel_rr.h"
 
 static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque);
-static int rr_set_vcpu_intr_cnt(int vcpu_id, unsigned long inst_cnt);
+static int rr_set_vcpu_intr_info(int vcpu_id, rr_interrupt *info);
 
 int in_record = 0;
 int in_replay = 0;
@@ -442,24 +442,15 @@ static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque)
     unsigned int *int_vector = (unsigned int *)opaque;
 
     WARN_ON(is_guest_mode(vcpu));
+    rr_interrupt info = {
+        .inst_cnt = kvm_get_inst_cnt(vcpu),
+        .vector = *int_vector,
+        .rip = kvm_arch_vcpu_get_ip(vcpu),
+    };
 
-    // event_log = kmalloc(sizeof(rr_event_log), GFP_KERNEL);
+    rr_get_regs(vcpu, &info.regs);
 
-    // event_log->id = vcpu->vcpu_id;
-    // event_log->event.interrupt.vector = *int_vector;
-    // event_log->event.interrupt.from = 3;
-    // event_log->type = EVENT_TYPE_INTERRUPT;
-    // event_log->next = NULL;
-
-    // event_log->rip = kvm_arch_vcpu_get_ip(vcpu);
-
-    // event_log->inst_cnt = kvm_get_inst_cnt(vcpu);
-
-    // rr_get_regs(vcpu, &event_log->event.interrupt.regs);
-
-    // rr_insert_event_log(event_log);
-
-    BUG_ON(rr_set_vcpu_intr_cnt(vcpu->vcpu_id, kvm_get_inst_cnt(vcpu)) < 0);
+    rr_set_vcpu_intr_info(vcpu->vcpu_id, &info);
 }
 
 static void handle_event_io_in(struct kvm_vcpu *vcpu, void *opaque)
@@ -808,13 +799,13 @@ static int get_lock_owner(void) {
 }
 
 static int
-rr_set_vcpu_intr_cnt(int vcpu_id, unsigned long inst_cnt)
+rr_set_vcpu_intr_info(int vcpu_id, rr_interrupt *info)
 {
     int cpu_id;
 
-    if (copy_to_user(&inst_cnt,
-                     (int __user *)(ivshmem_base_addr + vcpu_inst_cnt_offset + vcpu_id * sizeof(unsigned long)),
-                     sizeof(unsigned long)))
+    if (__copy_to_user((int __user *)(ivshmem_base_addr + vcpu_inst_cnt_offset + vcpu_id * sizeof(rr_interrupt)),
+                       info,
+                       sizeof(rr_interrupt)))
     {
         printk(KERN_WARNING "Failed to set vcpu intr inst cnt\n");
         return -1;
@@ -925,9 +916,12 @@ rr_handle_breakpoint(struct kvm_vcpu *vcpu)
     return 0;
 }
 
-void rr_register_ivshmem(unsigned long addr)
+void rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
 {
     rr_event_guest_queue_header header;
+    int requied_header_size = sizeof(rr_event_guest_queue_header) + \
+                              atomic_read(&kvm->online_vcpus) * sizeof(rr_interrupt) + \
+                              sizeof(unsigned long);
 
     ivshmem_base_addr = addr;
 
@@ -935,8 +929,12 @@ void rr_register_ivshmem(unsigned long addr)
         printk(KERN_WARNING "Failed to read from user memory\n");
     }
 
-    printk(KERN_WARNING "Header info: total_pos=%u, cur_pos=%u, rr_endabled=%u\n",
-           header.total_pos, header.current_pos, header.rr_enabled);
+    printk(KERN_WARNING "Header info: total_pos=%u, cur_pos=%u, rr_endabled=%u, requied_header_size=%d\n",
+           header.total_pos, header.current_pos, header.rr_enabled, requied_header_size);
+
+    if (header.header_size < requied_header_size) {
+        printk(KERN_WARNING "Too many vcpu and overloads the header area");
+    }
 }
 
 EXPORT_SYMBOL_GPL(rr_handle_breakpoint);

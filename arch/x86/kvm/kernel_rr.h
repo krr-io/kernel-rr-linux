@@ -48,7 +48,7 @@ void handle_hypercall_getuser(struct kvm_vcpu *vcpu,
                               unsigned long val);
 
 
-void rr_register_ivshmem(unsigned long addr);
+void rr_register_ivshmem(struct kvm *kvm, unsigned long addr);
 void rr_sync_inst_cnt(struct kvm_vcpu *vcpu, unsigned long spin_cnt);
 void put_result_buffer(unsigned long user_addr);
 unsigned long get_result_buffer(void);
