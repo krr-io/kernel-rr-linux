@@ -48,10 +48,12 @@ void handle_hypercall_getuser(struct kvm_vcpu *vcpu,
                               unsigned long val);
 
 
-void rr_register_ivshmem(struct kvm *kvm, unsigned long addr);
+int rr_register_ivshmem(struct kvm *kvm, unsigned long addr);
 void rr_sync_inst_cnt(struct kvm_vcpu *vcpu, unsigned long spin_cnt);
 void put_result_buffer(unsigned long user_addr);
 unsigned long get_result_buffer(void);
 void set_buffer_inject_flag(int bit);
 int rr_queue_full(void);
+int get_record_error(void);
+void set_record_error(int error_code);
 #endif /* __KVM_X86_KERNEL_RR_H */

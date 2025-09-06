@@ -5713,6 +5713,7 @@ static int handle_rdtsc(struct kvm_vcpu *vcpu)
 {
 	u64 tsc = 0;
 	struct x86_emulate_ctxt *emulate_ctxt;
+	int rr_err;
 
 	emulate_ctxt = vcpu->arch.emulate_ctxt;
 
@@ -5723,8 +5724,13 @@ static int handle_rdtsc(struct kvm_vcpu *vcpu)
 	kvm_rax_write(vcpu, (u32)tsc);
 	kvm_rdx_write(vcpu, tsc >> 32);
 
-	if (rr_in_record() && vmx_get_cpl(vcpu) == 0)
+	if (rr_in_record() && vmx_get_cpl(vcpu) == 0) {
 		rr_record_event(vcpu, EVENT_TYPE_RDTSC, &tsc);
+		rr_err = get_record_error();
+		if (rr_err != 0) {
+			return rr_err;
+		}
+	}
 
 	return kvm_skip_emulated_instruction(vcpu);
 }

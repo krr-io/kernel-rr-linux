@@ -6884,11 +6884,13 @@ set_pit2_out:
 		printk(KERN_INFO "Start recording guest, shm addr=0x%lx, header size=%lu\n",
 			   record_data.shm_base_addr, sizeof(rr_event_guest_queue_header));
 
-		rr_register_ivshmem(kvm, record_data.shm_base_addr);
+		r = 0;
+		if (rr_register_ivshmem(kvm, record_data.shm_base_addr) != 0) {
+			r = -1;
+		}
 
 	    rr_set_in_record(kvm, 1, record_data);
 
-		r = 0;
 		break;
 	}
 	case KVM_END_RECORD: {
@@ -6896,8 +6898,7 @@ set_pit2_out:
 		printk(KERN_INFO "End recording guest\n");
 
 		rr_set_in_record(kvm, 0, record_data);
-
-		r = 0;
+		r = get_record_error();
 		break;
 	}
 	case KVM_GET_RR_EVENT_NUMBER: {
@@ -9904,7 +9905,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 				rr_record_event(vcpu, EVENT_TYPE_INTERRUPT, &intr);
 				vcpu->int_injected++;
 				if (vcpu->bp_exit) {
-					r = -199;
+					r = RR_HIT_BREAKPOINT;
 					*req_immediate_exit = true;
 					vcpu->bp_exit = 0;
 					goto out;
@@ -10532,7 +10533,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 		r = inject_pending_event(vcpu, &req_immediate_exit);
 		if (r < 0) {
-			if (r != -199)
+			if (r != RR_HIT_BREAKPOINT)
 				r = 0;
 			else
 				printk(KERN_INFO "Unlock interrupt");
@@ -11063,7 +11064,7 @@ int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu)
 
 	r = vcpu_run(vcpu);
 
-	if (r == -199)
+	if (r == RR_HIT_BREAKPOINT)
 		printk(KERN_INFO "Unlock exit");
 
 out:

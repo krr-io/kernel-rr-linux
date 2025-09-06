@@ -15,6 +15,7 @@
 
 static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque);
 static int rr_set_vcpu_intr_info(int vcpu_id, rr_interrupt *info);
+static int get_lock_owner(void);
 
 int in_record = 0;
 int in_replay = 0;
@@ -40,7 +41,18 @@ static volatile unsigned long buffer_inject_flag = 0;
 
 static unsigned long lock_owner_offset = sizeof(rr_event_guest_queue_header);
 static unsigned long vcpu_inst_cnt_offset = sizeof(rr_event_guest_queue_header) + sizeof(unsigned long);
+static int error_code = 0;
 
+void set_record_error(int code)
+{
+    error_code = code;
+}
+
+int get_record_error(void)
+{
+    return error_code;
+}
+EXPORT_SYMBOL_GPL(get_record_error);
 
 void set_buffer_inject_flag(int bit)
 {
@@ -69,21 +81,31 @@ static void rr_modify_rdtsc(struct kvm_vcpu *vcpu, unsigned long inst_cnt, unsig
 
     if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
+        set_record_error(RR_HANDLE_EVENT_FAILED);
         return;
     }
 
     if (__copy_from_user(&entry_header, (void __user *)ivshmem_base_addr + header.current_byte - entry_size, sizeof(rr_event_entry_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
+        set_record_error(RR_HANDLE_EVENT_FAILED);
+        return;
+    }
+
+    if (get_lock_owner() != vcpu->vcpu_id) {
+        printk(KERN_WARNING "Unexpected vCPU[%d] RDTSC execution, RIP=0x%lx\n", vcpu->vcpu_id, rip);
+        set_record_error(RR_HANDLE_EVENT_FAILED);
         return;
     }
 
     if (entry_header.type != EVENT_TYPE_RDTSC) {
         printk(KERN_WARNING "Current not rdtsc\n");
+        set_record_error(RR_HANDLE_EVENT_FAILED);
         return;
     }
 
     if (__copy_from_user(&input, (void __user *)ivshmem_base_addr + header.current_byte - entry_size + sizeof(rr_event_entry_header), sizeof(rr_io_input))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
+        set_record_error(RR_HANDLE_EVENT_FAILED);
         return;
     }
 
@@ -94,6 +116,7 @@ static void rr_modify_rdtsc(struct kvm_vcpu *vcpu, unsigned long inst_cnt, unsig
     if (__copy_to_user((void __user *)ivshmem_base_addr + header.current_byte - entry_size + sizeof(rr_event_entry_header),
                        &input, sizeof(rr_io_input))) {
         printk(KERN_WARNING "Failed to write to user memory\n");
+        set_record_error(-1);
         return;
     }
 }
@@ -120,12 +143,14 @@ static void rr_append_to_queue(void *event, unsigned long size, int type)
     if (__copy_to_user((void __user *)(ivshmem_base_addr + header.current_byte),
         &entry_header, sizeof(rr_event_entry_header))) {
         printk(KERN_WARNING "Failed to copy to user memory\n");
+        set_record_error(RR_HANDLE_EVENT_FAILED);
     }
     header.current_byte += sizeof(rr_event_entry_header);
 
     if (__copy_to_user((void __user *)(ivshmem_base_addr + header.current_byte),
         event, size)) {
         printk(KERN_WARNING "Failed to copy to user memory\n");
+        set_record_error(RR_HANDLE_EVENT_FAILED);
     }
     header.current_byte += size;
 
@@ -138,6 +163,7 @@ static void rr_append_to_queue(void *event, unsigned long size, int type)
     if (__copy_to_user((void __user *)ivshmem_base_addr,
         &header, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to copy from user memory\n");
+        set_record_error(-1);
     }
 
     return;
@@ -720,6 +746,7 @@ void rr_set_in_record(struct kvm *kvm, int record, struct rr_record_data data)
 
     if (in_record) {
         clear_events();
+        set_record_error(0);
     }
 
     kvm_for_each_vcpu(i, vcpu, kvm) {
@@ -847,16 +874,24 @@ void rr_record_event(struct kvm_vcpu *vcpu, int event_type, void *opaque)
     switch (event_type)
     {
     case EVENT_TYPE_INTERRUPT:
-        bool hypervisor_record = false;
-        unsigned long addr = kvm_get_linear_rip(vcpu);
+        bool in_guest_record = false;
+        /*
+            If the current vcpu is not the lock owner, hypervisor cannot just
+            append to the event trace, instead, it needs guest recorder to record
+            this event once it gets the lock and hypervisor may provide necessary
+            information for this interrupt, such as the instruction count and RIP.
 
+            Since at this moment the vcpu is trapped in hypervisor, so if the owner
+            we read here is not the current vcpu, then it's not the owner, and has
+            to acquire the global lock before handling this interrupt.
+        */
         if (atomic_read(&vcpu->kvm->online_vcpus) > 1) {
             if (static_call(kvm_x86_get_cpl)(vcpu) > 0 || get_lock_owner() != vcpu->vcpu_id) {
-                hypervisor_record = true;
+                in_guest_record = true;
             }
         }
 
-        if (hypervisor_record) {
+        if (in_guest_record) {
             handle_event_interrupt(vcpu, opaque);
         } else {
             handle_event_interrupt_shm(vcpu, opaque);
@@ -869,6 +904,9 @@ void rr_record_event(struct kvm_vcpu *vcpu, int event_type, void *opaque)
         handle_event_syscall(vcpu, opaque);
         break;
     case EVENT_TYPE_IO_IN:
+        if (static_call(kvm_x86_get_cpl)(vcpu) > 0) {
+            return;
+        }
         // handle_event_io_in(vcpu, opaque);
         handle_event_io_in_shm(vcpu, opaque);
         break;
@@ -916,7 +954,7 @@ rr_handle_breakpoint(struct kvm_vcpu *vcpu)
     return 0;
 }
 
-void rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
+int rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
 {
     rr_event_guest_queue_header header;
     int requied_header_size = sizeof(rr_event_guest_queue_header) + \
@@ -927,6 +965,7 @@ void rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
 
     if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
+        return RR_RECORD_SETUP_FAILED;
     }
 
     printk(KERN_WARNING "Header info: total_pos=%u, cur_pos=%u, rr_endabled=%u, requied_header_size=%d\n",
@@ -934,7 +973,10 @@ void rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
 
     if (header.header_size < requied_header_size) {
         printk(KERN_WARNING "Too many vcpu and overloads the header area");
+        return RR_RECORD_SETUP_FAILED;
     }
+
+    return 0;
 }
 
 EXPORT_SYMBOL_GPL(rr_handle_breakpoint);
