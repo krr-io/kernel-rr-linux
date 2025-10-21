@@ -427,7 +427,7 @@ void kvm_start_inst_cnt(struct kvm_vcpu *vcpu)
 
 	// vcpu->rr_start_point = kvm_pmu_read_counter(vcpu, PERF_COUNT_HW_INSTRUCTIONS);
 	vcpu->rr_start_point = kvm_get_inst_cnt(vcpu);
-	printk(KERN_WARNING "initial inst cnt: %llu\n", vcpu->rr_start_point);
+	printk(KERN_DEBUG "initial inst cnt: %llu\n", vcpu->rr_start_point);
 }
 
 u64 kvm_get_inst_cnt(struct kvm_vcpu *vcpu)
@@ -450,7 +450,7 @@ u64 kvm_get_inst_cnt(struct kvm_vcpu *vcpu)
 	}
 
 	if (!inst_cnt)
-		printk(KERN_WARNING "inst_cnt is: %lu", inst_cnt);
+		printk(KERN_DEBUG "inst_cnt is: %lu", inst_cnt);
 
 	return inst_cnt;
 }
@@ -5931,7 +5931,7 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 		struct rr_event_info *event_info = kzalloc(sizeof(struct rr_event_info), GFP_KERNEL);
 		event_info->event_number = rr_get_mem_log_list_length();
 
-		printk(KERN_INFO "mem log number = %d\n", event_info->event_number);
+		printk(KERN_DEBUG "mem log number = %d\n", event_info->event_number);
 
 		if (copy_to_user(argp, event_info, sizeof(struct rr_event_info)))
 			goto out;
@@ -6881,7 +6881,7 @@ set_pit2_out:
 
 		copy_from_user(&record_data, argp, sizeof(record_data));
 		
-		printk(KERN_INFO "Start recording guest, shm addr=0x%lx, header size=%lu\n",
+		printk(KERN_DEBUG "Start recording guest, shm addr=0x%lx, header size=%lu\n",
 			   record_data.shm_base_addr, sizeof(rr_event_guest_queue_header));
 
 		r = 0;
@@ -6895,7 +6895,7 @@ set_pit2_out:
 	}
 	case KVM_END_RECORD: {
 		struct rr_record_data record_data;
-		printk(KERN_INFO "End recording guest\n");
+		printk(KERN_DEBUG "End recording guest\n");
 
 		rr_set_in_record(kvm, 0, record_data);
 		r = get_record_error();
@@ -6904,7 +6904,7 @@ set_pit2_out:
 	case KVM_GET_RR_EVENT_NUMBER: {
 		struct rr_event_info *event_info = kzalloc(sizeof(struct rr_event_info), GFP_KERNEL);
 		event_info->event_number = rr_get_event_list_length();
-		printk(KERN_INFO "event number = %d\n", event_info->event_number);
+		printk(KERN_DEBUG "event number = %d\n", event_info->event_number);
 
 		if (copy_to_user(argp, event_info, sizeof(struct rr_event_info))) {
 			printk(KERN_WARNING "Failed to copy event info");
@@ -8581,7 +8581,7 @@ static int kvm_vcpu_do_singlestep(struct kvm_vcpu *vcpu)
 {
 	struct kvm_run *kvm_run = vcpu->run;
 
-	printk(KERN_INFO "[kvm_vcpu_do_singlestep], %lu\n", kvm_get_inst_cnt(vcpu));
+	printk(KERN_DEBUG "[kvm_vcpu_do_singlestep], %lu\n", kvm_get_inst_cnt(vcpu));
 
 	if (vcpu->guest_debug & KVM_GUESTDBG_SINGLESTEP) {
 		kvm_run->debug.arch.dr6 = DR6_BS | DR6_ACTIVE_LOW;
@@ -9662,13 +9662,13 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 	}
 
 	case 100: {
-		printk(KERN_INFO "Start record");
+		printk(KERN_DEBUG "Start record");
 		vcpu->kvm->start_record = true;
 		return kvm_skip_emulated_instruction(vcpu);
 	}
 
 	case 101: {
-		printk(KERN_INFO "End record, result buffer 0x%lx", a0);
+		printk(KERN_DEBUG "End record, result buffer 0x%lx", a0);
 		vcpu->kvm->end_record = true;
 		put_result_buffer(a0);
 		return kvm_skip_emulated_instruction(vcpu);
@@ -10959,7 +10959,7 @@ static int complete_emulated_mmio(struct kvm_vcpu *vcpu)
 	vcpu->arch.complete_userspace_io = complete_emulated_mmio;
 	
 	if (!run->mmio.is_write)
-		printk(KERN_INFO "MMIO exit");
+		printk(KERN_DEBUG "MMIO exit");
 
 	return 0;
 }

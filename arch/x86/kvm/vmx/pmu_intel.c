@@ -521,7 +521,7 @@ static void intel_pmu_refresh(struct kvm_vcpu *vcpu)
 
 	perf_get_x86_pmu_capability(&x86_pmu);
 
-	printk(KERN_INFO "intel_pmu_refresh");
+	printk(KERN_DEBUG "intel_pmu_refresh");
 
 	// KRR reserves one counter
 	pmu->nr_arch_gp_counters = min_t(int, eax.split.num_counters,

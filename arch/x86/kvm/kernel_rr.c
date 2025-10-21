@@ -646,7 +646,7 @@ static void report_record_stat(int cpu_id)
         printk(KERN_WARNING "Failed to read from user memory\n");
     }
 
-    printk(KERN_WARNING "=== Report recorded events ===\n");
+    printk(KERN_DEBUG "=== Report recorded events ===\n");
     while (event != NULL) {
         if (event->type == EVENT_TYPE_INTERRUPT) {
             event_int_num++;
@@ -705,7 +705,7 @@ static void report_record_stat(int cpu_id)
 
     }
 
-    printk(KERN_INFO "CPU %d: syscall=%d, interrupt=%d, pf=%d,"\
+    printk(KERN_DEBUG "CPU %d: syscall=%d, interrupt=%d, pf=%d,"\
            "io_in=%d, cfu=%d, dma_done=%d, gfu=%d\n",
            cpu_id, event_syscall_num, event_int_num, event_pf_excep,
            event_io_in, event_cfu, event_dma_done, event_gfu);
@@ -720,7 +720,7 @@ static void rr_vcpu_set_in_record(struct kvm_vcpu *vcpu, int record, struct rr_r
 
         vcpu->int_injected = 0;
     } else {
-        printk(KERN_INFO "RR initialized\n");
+        printk(KERN_DEBUG "RR initialized\n");
 
         kvm_make_request(KVM_REQ_START_RECORD, vcpu);
         vcpu->int_injected = 0;
@@ -731,7 +731,7 @@ static void rr_vcpu_set_in_record(struct kvm_vcpu *vcpu, int record, struct rr_r
         vcpu->checkpoint = false;
         vcpu->overflowed = false;
         if (vcpu->enable_trace)
-            printk(KERN_INFO "RR trace enabled, interval is %lu\n", vcpu->trace_interval);
+            printk(KERN_DEBUG "RR trace enabled, interval is %lu\n", vcpu->trace_interval);
     }
 
 }
@@ -776,7 +776,7 @@ void clear_events(void)
 
     rr_event_log_head = NULL;
     rr_event_log_tail = NULL;
-    printk(KERN_INFO "Records cleard\n");
+    printk(KERN_DEBUG "Records cleard\n");
 }
 
 void rr_clear_mem_log(void)
@@ -968,7 +968,7 @@ int rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
         return RR_RECORD_SETUP_FAILED;
     }
 
-    printk(KERN_WARNING "Header info: total_pos=%u, cur_pos=%u, rr_endabled=%u, requied_header_size=%d\n",
+    printk(KERN_DEBUG "Header info: total_pos=%u, cur_pos=%u, rr_endabled=%u, requied_header_size=%d\n",
            header.total_pos, header.current_pos, header.rr_enabled, requied_header_size);
 
     if (header.header_size < requied_header_size) {

@@ -113,7 +113,7 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 		.config = config,
 	};
 
-	printk(KERN_INFO "counter: exclude_kernel=%d, exclude_user=%d, pmc_type=%d\n",
+	printk(KERN_DEBUG "counter: exclude_kernel=%d, exclude_user=%d, pmc_type=%d\n",
 		   exclude_kernel, exclude_user, pmc->type);
 
 	if (type == PERF_TYPE_HARDWARE && config >= PERF_COUNT_HW_MAX)
@@ -232,14 +232,14 @@ void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
 
 	pmc_release_perf_event(pmc);
 
-	printk(KERN_WARNING "[reprogram_gp_counter]: called, eventsel=%llx, type=%d, config=%llx, rip=0x%lx, inst_cnt=%lu\n",
+	printk(KERN_DEBUG "[reprogram_gp_counter]: called, eventsel=%llx, type=%d, config=%llx, rip=0x%lx, inst_cnt=%lu\n",
 	       eventsel, type, config, kvm_get_linear_rip(pmc->vcpu), kvm_get_inst_cnt(pmc->vcpu));
 	pmc->current_config = eventsel;
 	pmc_reprogram_counter(pmc, type, config,
 			      !(eventsel & ARCH_PERFMON_EVENTSEL_USR),
 			      !(eventsel & ARCH_PERFMON_EVENTSEL_OS),
 			      eventsel & ARCH_PERFMON_EVENTSEL_INT);
-	printk(KERN_INFO "read after reprogram %lu", kvm_get_inst_cnt(pmc->vcpu));
+	printk(KERN_DEBUG "read after reprogram %lu", kvm_get_inst_cnt(pmc->vcpu));
 }
 EXPORT_SYMBOL_GPL(reprogram_gp_counter);
 
@@ -278,7 +278,7 @@ void reprogram_fixed_counter(struct kvm_pmc *pmc, u8 ctrl, int idx)
 			      !(en_field & 0x2), /* exclude user */
 			      !(en_field & 0x1), /* exclude kernel */
 			      pmi);
-	printk(KERN_INFO "read after reprogram fixed %lu", kvm_pmu_read_counter(pmc->vcpu, PERF_COUNT_HW_INSTRUCTIONS));
+	printk(KERN_DEBUG "read after reprogram fixed %lu", kvm_pmu_read_counter(pmc->vcpu, PERF_COUNT_HW_INSTRUCTIONS));
 }
 EXPORT_SYMBOL_GPL(reprogram_fixed_counter);
 
@@ -446,7 +446,7 @@ void kvm_pmu_refresh(struct kvm_vcpu *vcpu)
 void kvm_pmu_reset(struct kvm_vcpu *vcpu)
 {
 	struct kvm_pmu *pmu = vcpu_to_pmu(vcpu);
-	printk(KERN_INFO "kvm_pmu_reset: called\n");
+	printk(KERN_DEBUG "kvm_pmu_reset: called\n");
 
 	irq_work_sync(&pmu->irq_work);
 	kvm_x86_ops.pmu_ops->reset(vcpu);
