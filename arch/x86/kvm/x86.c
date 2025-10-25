@@ -868,7 +868,7 @@ void kvm_queue_exception_p(struct kvm_vcpu *vcpu, unsigned nr,
 			   unsigned long payload)
 {
 	if (nr == DB_VECTOR) {
-		if (rr_in_record()) {
+		if (rr_in_record(vcpu->kvm)) {
 			struct rr_exception_detail detail = {
 				.vector = nr,
 				.dr6 = payload
@@ -1524,7 +1524,7 @@ int kvm_emulate_rdpmc(struct kvm_vcpu *vcpu)
 		return 1;
 	}
 
-	if (rr_in_record()) {
+	if (rr_in_record(vcpu->kvm)) {
 		rr_record_event(vcpu, EVENT_TYPE_IO_IN, &data);
 	}
 
@@ -5888,15 +5888,6 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 		// rr_set_in_record(vcpu, 0);
 		break;
 	}
-	case KVM_START_REPLAY: {
-		rr_set_in_replay(vcpu, 1);
-		break;
-	}
-	case KVM_END_REPLAY: {
-		printk(KERN_INFO "End replaying guest\n");
-		rr_set_in_replay(vcpu, 0);
-		break;
-	}
 	case KVM_GET_RR_NEXT_EVENT: {
 		struct rr_event_log_t event_log = rr_get_next_event();
 		struct rr_event_log_t __user *user_event_log = argp;		
@@ -6898,7 +6889,7 @@ set_pit2_out:
 		printk(KERN_DEBUG "End recording guest\n");
 
 		rr_set_in_record(kvm, 0, record_data);
-		r = get_record_error();
+		r = get_record_error(kvm);
 		break;
 	}
 	case KVM_GET_RR_EVENT_NUMBER: {
@@ -7764,7 +7755,7 @@ static int emulator_pio_in(struct kvm_vcpu *vcpu, int size,
 		/* Results already available, fall through.  */
 	}
 
-	if(rr_in_record() && static_call(kvm_x86_get_cpl)(vcpu) == 0) {
+	if(rr_in_record(vcpu->kvm) && static_call(kvm_x86_get_cpl)(vcpu) == 0) {
 		rr_record_event(vcpu, EVENT_TYPE_IO_IN, vcpu->arch.pio_data);
 	}
 
@@ -9617,7 +9608,7 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 		return 0;
 	}
 	case KVM_HC_RR_RANDOM: {
-		if (rr_in_record()) {
+		if (rr_in_record(vcpu->kvm)) {
 			handle_hypercall_random(vcpu, a0, a1);
 		}
 		ret = 0;
@@ -9626,21 +9617,21 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 	case KVM_HC_RR_DATA_IN:
 	case KVM_HC_RR_STRNCPY: {
 		// printk(KERN_INFO "KVM data copy intercepted: src=0x%lx, dest=0x%lx, len=%lu\n", a0, a1, a2);
-		if (rr_in_record()) {
+		if (rr_in_record(vcpu->kvm)) {
 			handle_hypercall_cfu(vcpu, a0, a1, a2);
 		}
 		ret = 0;
 		return kvm_skip_emulated_instruction(vcpu);
 	}
 	case KVM_HC_RR_GETUSER: {
-		if (rr_in_record()) {
+		if (rr_in_record(vcpu->kvm)) {
 			handle_hypercall_getuser(vcpu, a0);
 		}
 		ret = 0;
 		return kvm_skip_emulated_instruction(vcpu);
 	}
 	case 17: {
-		if (rr_in_record()) {
+		if (rr_in_record(vcpu->kvm)) {
 			vcpu->begin_spin_cnt = kvm_get_inst_cnt(vcpu);
 		}
 
@@ -9648,7 +9639,7 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 	}
 	case 18: {
 		unsigned long inst_diff = kvm_get_inst_cnt(vcpu) - vcpu->begin_spin_cnt;
-		if (rr_in_record()) {
+		if (rr_in_record(vcpu->kvm)) {
 			BUG_ON(a1 * 3 + 5 != inst_diff);
 		}
 
@@ -9656,7 +9647,7 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 	}
 
 	case 20: {
-		if (rr_in_record())
+		if (rr_in_record(vcpu->kvm))
 			rr_sync_inst_cnt(vcpu, a0);
 		return kvm_skip_emulated_instruction(vcpu);
 	}
@@ -9901,7 +9892,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 			static_call(kvm_x86_set_irq)(vcpu);
 			WARN_ON(static_call(kvm_x86_interrupt_allowed)(vcpu, true) < 0);
 			
-			if (rr_in_record()) {
+			if (rr_in_record(vcpu->kvm)) {
 				rr_record_event(vcpu, EVENT_TYPE_INTERRUPT, &intr);
 				vcpu->int_injected++;
 				if (vcpu->bp_exit) {
@@ -10513,7 +10504,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 			kvm_stop_inst_cnt(vcpu);
 	}
 
-	if (rr_in_record() && rr_queue_full()) {
+	if (rr_in_record(vcpu->kvm) && rr_queue_full(vcpu->kvm)) {
 		r = -103;
 		goto out;
 	}
@@ -10764,7 +10755,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		r = -103;
 	}
 
-	if (rr_in_record()) {
+	if (rr_in_record(vcpu->kvm)) {
 		if (static_call(kvm_x86_get_cpl)(vcpu) > 0)
 			vcpu->run->userspace = 1;
 		else
@@ -12221,6 +12212,12 @@ void kvm_arch_free_vm(struct kvm *kvm)
 	__kvm_arch_free_vm(kvm);
 }
 
+static void kvm_rr_init_vm(struct kvm *kvm)
+{
+	kvm->rr_in_record = false;
+	kvm->rr_shm_base_addr = NULL;
+}
+
 
 int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 {
@@ -12233,6 +12230,8 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 	ret = kvm_page_track_init(kvm);
 	if (ret)
 		return ret;
+
+	kvm_rr_init_vm(kvm);
 
 	INIT_HLIST_HEAD(&kvm->arch.mask_notifier_list);
 	INIT_LIST_HEAD(&kvm->arch.active_mmu_pages);

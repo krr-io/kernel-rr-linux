@@ -5724,9 +5724,9 @@ static int handle_rdtsc(struct kvm_vcpu *vcpu)
 	kvm_rax_write(vcpu, (u32)tsc);
 	kvm_rdx_write(vcpu, tsc >> 32);
 
-	if (rr_in_record() && vmx_get_cpl(vcpu) == 0) {
+	if (rr_in_record(vcpu->kvm) && vmx_get_cpl(vcpu) == 0) {
 		rr_record_event(vcpu, EVENT_TYPE_RDTSC, &tsc);
-		rr_err = get_record_error();
+		rr_err = get_record_error(vcpu->kvm);
 		if (rr_err != 0) {
 			return rr_err;
 		}
