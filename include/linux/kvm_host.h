@@ -793,6 +793,9 @@ struct kvm {
 	bool start_record;
 	bool end_record;
 	bool rr_queue_full;
+	bool rr_in_record;
+	void *rr_shm_base_addr;
+	int rr_error_code;
 };
 
 #define kvm_err(fmt, ...) \

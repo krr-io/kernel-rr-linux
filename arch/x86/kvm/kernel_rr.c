@@ -14,11 +14,8 @@
 #include "kernel_rr.h"
 
 static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque);
-static int rr_set_vcpu_intr_info(int vcpu_id, rr_interrupt *info);
-static int get_lock_owner(void);
-
-int in_record = 0;
-int in_replay = 0;
+static int rr_set_vcpu_intr_info(struct kvm_vcpu *vcpu, rr_interrupt *info);
+static int get_lock_owner(struct kvm *kvm);
 
 DEFINE_SPINLOCK(queue_lock);
 
@@ -33,24 +30,21 @@ rr_mem_access_log *rr_mem_log_cur = NULL;
 
 rr_random *random_cur = NULL;
 
-static unsigned long ivshmem_base_addr = 0;
-
 static unsigned long user_result_buffer;
 
 static volatile unsigned long buffer_inject_flag = 0;
 
 static unsigned long lock_owner_offset = sizeof(rr_event_guest_queue_header);
 static unsigned long vcpu_inst_cnt_offset = sizeof(rr_event_guest_queue_header) + sizeof(unsigned long);
-static int error_code = 0;
 
-void set_record_error(int code)
+void set_record_error(struct kvm *kvm, int code)
 {
-    error_code = code;
+    kvm->rr_error_code = code;
 }
 
-int get_record_error(void)
+int get_record_error(struct kvm *kvm)
 {
-    return error_code;
+    return kvm->rr_error_code;
 }
 EXPORT_SYMBOL_GPL(get_record_error);
 
@@ -78,34 +72,35 @@ static void rr_modify_rdtsc(struct kvm_vcpu *vcpu, unsigned long inst_cnt, unsig
     rr_event_entry_header entry_header;
     rr_io_input input;
     unsigned long entry_size = sizeof(rr_io_input) + sizeof(rr_event_entry_header);
+    void *addr = vcpu->kvm->rr_shm_base_addr;
 
-    if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
+    if (__copy_from_user(&header, (void __user *)addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(vcpu->kvm, RR_HANDLE_EVENT_FAILED);
         return;
     }
 
-    if (__copy_from_user(&entry_header, (void __user *)ivshmem_base_addr + header.current_byte - entry_size, sizeof(rr_event_entry_header))) {
+    if (__copy_from_user(&entry_header, (void __user *)addr + header.current_byte - entry_size, sizeof(rr_event_entry_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(vcpu->kvm, RR_HANDLE_EVENT_FAILED);
         return;
     }
 
-    if (get_lock_owner() != vcpu->vcpu_id) {
+    if (get_lock_owner(vcpu->kvm) != vcpu->vcpu_id) {
         printk(KERN_WARNING "Unexpected vCPU[%d] RDTSC execution, RIP=0x%lx\n", vcpu->vcpu_id, rip);
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(vcpu->kvm, RR_HANDLE_EVENT_FAILED);
         return;
     }
 
     if (entry_header.type != EVENT_TYPE_RDTSC) {
         printk(KERN_WARNING "Current not rdtsc\n");
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(vcpu->kvm, RR_HANDLE_EVENT_FAILED);
         return;
     }
 
-    if (__copy_from_user(&input, (void __user *)ivshmem_base_addr + header.current_byte - entry_size + sizeof(rr_event_entry_header), sizeof(rr_io_input))) {
+    if (__copy_from_user(&input, (void __user *)addr + header.current_byte - entry_size + sizeof(rr_event_entry_header), sizeof(rr_io_input))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(vcpu->kvm, RR_HANDLE_EVENT_FAILED);
         return;
     }
 
@@ -113,23 +108,30 @@ static void rr_modify_rdtsc(struct kvm_vcpu *vcpu, unsigned long inst_cnt, unsig
     input.rip = rip;
     input.id = vcpu->vcpu_id;
 
-    if (__copy_to_user((void __user *)ivshmem_base_addr + header.current_byte - entry_size + sizeof(rr_event_entry_header),
+    if (__copy_to_user((void __user *)addr + header.current_byte - entry_size + sizeof(rr_event_entry_header),
                        &input, sizeof(rr_io_input))) {
         printk(KERN_WARNING "Failed to write to user memory\n");
-        set_record_error(-1);
+        set_record_error(vcpu->kvm, -1);
         return;
     }
 }
 
 
-static void rr_append_to_queue(void *event, unsigned long size, int type)
+static void rr_append_to_queue(struct kvm *kvm, void *event, unsigned long size, int type)
 {
     rr_event_guest_queue_header header;
     rr_event_entry_header entry_header = {
         .type = type,
     };
+    void *addr = kvm->rr_shm_base_addr;
 
-    if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
+    if (!addr) {
+        printk(KERN_WARNING "RR shared memory not initialized\n");
+        set_record_error(kvm, RR_HANDLE_EVENT_FAILED);
+        return;
+    }
+
+    if (__copy_from_user(&header, (void __user *)addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
     }
 
@@ -140,17 +142,17 @@ static void rr_append_to_queue(void *event, unsigned long size, int type)
                header.current_byte);
     }
 
-    if (__copy_to_user((void __user *)(ivshmem_base_addr + header.current_byte),
+    if (__copy_to_user((void __user *)(addr + header.current_byte),
         &entry_header, sizeof(rr_event_entry_header))) {
         printk(KERN_WARNING "Failed to copy to user memory\n");
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(kvm, RR_HANDLE_EVENT_FAILED);
     }
     header.current_byte += sizeof(rr_event_entry_header);
 
-    if (__copy_to_user((void __user *)(ivshmem_base_addr + header.current_byte),
+    if (__copy_to_user((void __user *)(addr + header.current_byte),
         event, size)) {
         printk(KERN_WARNING "Failed to copy to user memory\n");
-        set_record_error(RR_HANDLE_EVENT_FAILED);
+        set_record_error(kvm, RR_HANDLE_EVENT_FAILED);
     }
     header.current_byte += size;
 
@@ -160,10 +162,10 @@ static void rr_append_to_queue(void *event, unsigned long size, int type)
 
     header.current_pos++;
 
-    if (__copy_to_user((void __user *)ivshmem_base_addr,
+    if (__copy_to_user((void __user *)addr,
         &header, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to copy from user memory\n");
-        set_record_error(-1);
+        set_record_error(kvm, -1);
     }
 
     return;
@@ -193,12 +195,12 @@ static void handle_event_io_in_shm(struct kvm_vcpu *vcpu, void *opaque)
         for (i = 0; i < vcpu->arch.pio.count; i++) {
             // event.value = *((unsigned long *)io_val);
             memcpy(&event.value, io_val, vcpu->arch.pio.size);
-            rr_append_to_queue(&event, sizeof(rr_io_input), EVENT_TYPE_IO_IN);
+            rr_append_to_queue(vcpu->kvm, &event, sizeof(rr_io_input), EVENT_TYPE_IO_IN);
             io_val += vcpu->arch.pio.size;
         }
     } else {
         event.value = *((unsigned long *)io_val);
-        rr_append_to_queue(&event, sizeof(rr_io_input), EVENT_TYPE_IO_IN);
+        rr_append_to_queue(vcpu->kvm, &event, sizeof(rr_io_input), EVENT_TYPE_IO_IN);
     }
     // printk(KERN_INFO "rdtsc: inst=%lu\n", event.inst_cnt);
 }
@@ -222,7 +224,7 @@ static void handle_event_interrupt_shm(struct kvm_vcpu *vcpu, void *opaque)
     //     event.inject_buf_flag |= (1 << (INJ_DMA_NET_BUF_BIT - 1));
     // }
 
-    rr_append_to_queue(&event, sizeof(rr_interrupt), EVENT_TYPE_INTERRUPT);
+    rr_append_to_queue(vcpu->kvm, &event, sizeof(rr_interrupt), EVENT_TYPE_INTERRUPT);
 
     if (vcpu->enable_trace) {
         if (static_call(kvm_x86_get_cpl)(vcpu) == 0)
@@ -263,7 +265,7 @@ static void handle_event_exception_shm(struct kvm_vcpu *vcpu, void *opaque)
     rr_get_sregs(vcpu, &sregs);
     rr_get_regs(vcpu, &event.regs);
 
-    rr_append_to_queue(&event, sizeof(rr_exception), EVENT_TYPE_EXCEPTION);
+    rr_append_to_queue(vcpu->kvm, &event, sizeof(rr_exception), EVENT_TYPE_EXCEPTION);
 }
 
 /* =================== */
@@ -476,7 +478,7 @@ static void handle_event_interrupt(struct kvm_vcpu *vcpu, void *opaque)
 
     rr_get_regs(vcpu, &info.regs);
 
-    rr_set_vcpu_intr_info(vcpu->vcpu_id, &info);
+    rr_set_vcpu_intr_info(vcpu, &info);
 }
 
 static void handle_event_io_in(struct kvm_vcpu *vcpu, void *opaque)
@@ -532,7 +534,7 @@ void handle_hypercall_random(struct kvm_vcpu *vcpu,
                event_log.event.rand.buf, ret);
     }
 
-    rr_append_to_queue(&event_log, sizeof(rr_random), EVENT_TYPE_RANDOM);
+    rr_append_to_queue(vcpu->kvm, &event_log, sizeof(rr_random), EVENT_TYPE_RANDOM);
 }
 
 void handle_hypercall_cfu(struct kvm_vcpu *vcpu,
@@ -625,10 +627,10 @@ static void handle_event_dma_done_shm(struct kvm_vcpu *vcpu, void *opaque)
 
     WARN_ON(is_guest_mode(vcpu));
 
-    rr_append_to_queue(&event, sizeof(rr_dma_done), EVENT_TYPE_DMA_DONE);
+    rr_append_to_queue(vcpu->kvm, &event, sizeof(rr_dma_done), EVENT_TYPE_DMA_DONE);
 }
 
-static void report_record_stat(int cpu_id)
+static void report_record_stat(struct kvm_vcpu *vcpu)
 {
     rr_event_log *event = rr_event_log_head;
     int event_int_num = 0;
@@ -641,8 +643,10 @@ static void report_record_stat(int cpu_id)
     int event_gfu = 0;
 
     rr_event_guest_queue_header header;
+    void *addr = vcpu->kvm->rr_shm_base_addr;
+    int cpu_id = vcpu->vcpu_id;
 
-    if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
+    if (__copy_from_user(&header, (void __user *)addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
     }
 
@@ -714,7 +718,7 @@ static void report_record_stat(int cpu_id)
 static void rr_vcpu_set_in_record(struct kvm_vcpu *vcpu, int record, struct rr_record_data data)
 {
     if (!record) {
-        report_record_stat(vcpu->vcpu_id);
+        report_record_stat(vcpu);
 
         kvm_make_request(KVM_REQ_END_RECORD, vcpu);
 
@@ -741,24 +745,15 @@ void rr_set_in_record(struct kvm *kvm, int record, struct rr_record_data data)
     unsigned long i;
     struct kvm_vcpu *vcpu;
 
-    in_record = record;
-    total_event_cnt = 0;
+    kvm->rr_in_record = record;
 
-    if (in_record) {
-        clear_events();
-        set_record_error(0);
+    if (kvm->rr_in_record) {
+        set_record_error(kvm, 0);
     }
 
     kvm_for_each_vcpu(i, vcpu, kvm) {
         rr_vcpu_set_in_record(vcpu, record, data);
     }
-
-    if (!record) {
-        rr_event_cur = rr_event_log_head;
-        rr_mem_log_cur = rr_mem_log_head;
-    }
-
-    rr_clear_mem_log();
 }
 
 void clear_events(void)
@@ -788,19 +783,9 @@ void rr_clear_mem_log(void)
     }
 }
 
-void rr_set_in_replay(struct kvm_vcpu *vcpu, int replay)
+int rr_in_record(struct kvm *kvm)
 {
-    in_replay = replay;
-}
-
-int rr_in_replay(void)
-{
-    return in_replay;
-}
-
-int rr_in_record(void)
-{
-    return in_record;
+    return kvm->rr_in_record;
 }
 EXPORT_SYMBOL_GPL(rr_in_record);
 
@@ -815,10 +800,10 @@ lapic_log* create_lapic_log(int delivery_mode, int vector, int trig_mode)
     return log;
 }
 
-static int get_lock_owner(void) {
+static int get_lock_owner(struct kvm *kvm) {
     int cpu_id;
 
-    if (get_user(cpu_id, (int __user *)(ivshmem_base_addr + lock_owner_offset))) {
+    if (get_user(cpu_id, (int __user *)(kvm->rr_shm_base_addr + lock_owner_offset))) {
         printk(KERN_WARNING "Failed to read owner id\n");
     }
 
@@ -826,11 +811,12 @@ static int get_lock_owner(void) {
 }
 
 static int
-rr_set_vcpu_intr_info(int vcpu_id, rr_interrupt *info)
+rr_set_vcpu_intr_info(struct kvm_vcpu *vcpu, rr_interrupt *info)
 {
-    int cpu_id;
+    int vcpu_id = vcpu->vcpu_id;
+    unsigned long addr = vcpu->kvm->rr_shm_base_addr;
 
-    if (__copy_to_user((int __user *)(ivshmem_base_addr + vcpu_inst_cnt_offset + vcpu_id * sizeof(rr_interrupt)),
+    if (__copy_to_user((int __user *)(addr + vcpu_inst_cnt_offset + vcpu_id * sizeof(rr_interrupt)),
                        info,
                        sizeof(rr_interrupt)))
     {
@@ -849,14 +835,14 @@ void rr_sync_inst_cnt(struct kvm_vcpu *vcpu, unsigned long spin_cnt)
     event.id = vcpu->vcpu_id;
     event.event.interrupt.spin_count = spin_cnt;
 
-    rr_append_to_queue(&event, sizeof(rr_event_log_guest), EVENT_TYPE_INST_SYNC);
+    rr_append_to_queue(vcpu->kvm, &event, sizeof(rr_event_log_guest), EVENT_TYPE_INST_SYNC);
 }
 
-int rr_queue_full(void)
+int rr_queue_full(struct kvm *kvm)
 {
     rr_event_guest_queue_header header;
 
-    if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
+    if (__copy_from_user(&header, (void __user *)kvm->rr_shm_base_addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
     }
 
@@ -871,6 +857,12 @@ int rr_queue_full(void)
 
 void rr_record_event(struct kvm_vcpu *vcpu, int event_type, void *opaque)
 {
+    if (!vcpu->kvm->rr_shm_base_addr) {
+        printk(KERN_WARNING "RR shared memory not initialized\n");
+        set_record_error(vcpu->kvm, RR_HANDLE_EVENT_FAILED);
+        return;
+    }
+
     switch (event_type)
     {
     case EVENT_TYPE_INTERRUPT:
@@ -886,7 +878,7 @@ void rr_record_event(struct kvm_vcpu *vcpu, int event_type, void *opaque)
             to acquire the global lock before handling this interrupt.
         */
         if (atomic_read(&vcpu->kvm->online_vcpus) > 1) {
-            if (static_call(kvm_x86_get_cpl)(vcpu) > 0 || get_lock_owner() != vcpu->vcpu_id) {
+            if (static_call(kvm_x86_get_cpl)(vcpu) > 0 || get_lock_owner(vcpu->kvm) != vcpu->vcpu_id) {
                 in_guest_record = true;
             }
         }
@@ -961,9 +953,9 @@ int rr_register_ivshmem(struct kvm *kvm, unsigned long addr)
                               atomic_read(&kvm->online_vcpus) * sizeof(rr_interrupt) + \
                               sizeof(unsigned long);
 
-    ivshmem_base_addr = addr;
+    kvm->rr_shm_base_addr = addr;
 
-    if (__copy_from_user(&header, (void __user *)ivshmem_base_addr, sizeof(rr_event_guest_queue_header))) {
+    if (__copy_from_user(&header, (void __user *)kvm->rr_shm_base_addr, sizeof(rr_event_guest_queue_header))) {
         printk(KERN_WARNING "Failed to read from user memory\n");
         return RR_RECORD_SETUP_FAILED;
     }

@@ -6,10 +6,8 @@
 
 void rr_record_event(struct kvm_vcpu *vcpu, int event_type, void *opaque);
 lapic_log* create_lapic_log(int delivery_mode, int vector, int trig_mode);
-int rr_in_record(void);
-int rr_in_replay(void);
+int rr_in_record(struct kvm *kvm);
 void rr_set_in_record(struct kvm *kvm, int record, struct rr_record_data data);
-void rr_set_in_replay(struct kvm_vcpu *vcpu, int replay);
 void rr_get_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs);
 void rr_set_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs);
 void clear_events(void);
@@ -53,7 +51,7 @@ void rr_sync_inst_cnt(struct kvm_vcpu *vcpu, unsigned long spin_cnt);
 void put_result_buffer(unsigned long user_addr);
 unsigned long get_result_buffer(void);
 void set_buffer_inject_flag(int bit);
-int rr_queue_full(void);
-int get_record_error(void);
-void set_record_error(int error_code);
+int rr_queue_full(struct kvm *kvm);
+int get_record_error(struct kvm *kvm);
+void set_record_error(struct kvm *kvm, int error_code);
 #endif /* __KVM_X86_KERNEL_RR_H */

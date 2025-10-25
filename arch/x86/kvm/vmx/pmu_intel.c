@@ -61,13 +61,7 @@ static void reprogram_fixed_counters(struct kvm_pmu *pmu, u64 data)
 static void global_ctrl_changed(struct kvm_pmu *pmu, u64 data)
 {
 	int bit;
-	u64 diff;
-
-	if (rr_in_record()) {
-		data |= KRR_COUNTER_BIT;
-	}
-
-	diff = pmu->global_ctrl ^ data;
+	u64 diff = pmu->global_ctrl ^ data;
 
 	pmu->global_ctrl = data;
 
@@ -479,9 +473,6 @@ static void setup_fixed_pmc_eventsel(struct kvm_pmu *pmu)
 	struct kvm_pmc *pmc;
 	u32 event;
 	int i;
-
-	// if (rr_in_record())
-	// 	return;
 
 	for (i = 0; i < pmu->nr_arch_fixed_counters; i++) {
 		pmc = &pmu->fixed_counters[i];
